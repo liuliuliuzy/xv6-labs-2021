@@ -132,18 +132,32 @@ static uint64 (*syscalls[])(void) = {
 [SYS_trace]   sys_trace,
 };
 
-void
-syscall(void)
+static char *syscallNames[] = {"fork", "exit", "wait", "pipe", "read", "kill",
+                               "exec", "fstat", "chdir", "dup", "getpid", "sbrk",
+                               "sleep", "uptime", "open", "write", "mknod", "unlink",
+                               "link", "mkdir", "close", "trace"};
+
+void syscall(void)
 {
   int num;
   struct proc *p = myproc();
 
   num = p->trapframe->a7;
-  if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+  // 如果系统调用号是合法的
+  if (num > 0 && num < NELEM(syscalls) && syscalls[num])
+  {
+    // 执行系统调用，然后将返回值储存在a0寄存器中
     p->trapframe->a0 = syscalls[num]();
-  } else {
+    // 如果此次系统调用的系统调用号与p->traceMask中对应位匹配，那么就打印trace信息
+    if (p->traceMask & (1 << num))
+    {
+      printf("%d: syscall %s -> %d\n", p->pid, syscallNames[num - 1], p->trapframe->a0);
+    }
+  }
+  else
+  {
     printf("%d %s: unknown sys call %d\n",
-            p->pid, p->name, num);
+           p->pid, p->name, num);
     p->trapframe->a0 = -1;
   }
 }

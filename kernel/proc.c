@@ -277,9 +277,13 @@ fork(void)
   struct proc *p = myproc();
 
   // Allocate process.
+  // 为子进程新创建proc结构体
   if((np = allocproc()) == 0){
     return -1;
   }
+
+  // 复制父进程的p->traceMask变量
+  np->traceMask = p->traceMask;
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){

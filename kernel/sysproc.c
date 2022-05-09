@@ -100,9 +100,15 @@ sys_uptime(void)
 // sys_trace()实现
 uint64 sys_trace(void)
 {
-  uint64 arg = 99;
-  argaddr(0, &arg);
-  printf("hello trace\n");
-  printf("arg is %d\n", arg);
+  int traceMask;
+
+  // 从第0个参数的位置获取traceMask参数
+  if(argint(0, &traceMask) < 0)
+  {
+    return -1;
+  }
+  
+  // 设置进程的traceMask
+  myproc()->traceMask = traceMask;
   return 0;
 }
