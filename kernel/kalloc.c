@@ -18,6 +18,7 @@ struct run {
   struct run *next;
 };
 
+// 全局变量，管理所有空闲内存页
 struct {
   struct spinlock lock;
   struct run *freelist;
@@ -26,7 +27,9 @@ struct {
 void
 kinit()
 {
+  // 初始化锁
   initlock(&kmem.lock, "kmem");
+  // 初始化一块空闲的内存区域
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -57,6 +60,7 @@ kfree(void *pa)
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
+  // 插入到单向链表的头部
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -79,4 +83,18 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+int kNumOfFreenums(void)
+{
+  int cnt = 0;
+  struct run *t;
+  t = kmem.freelist;
+  while (t)
+  {
+    cnt += PGSIZE;
+    t = t->next;
+  }
+
+  return cnt;
 }

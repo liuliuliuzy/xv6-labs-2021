@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sysinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -657,4 +658,35 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// 返回状态不是UNUSED的进程数
+int numOfProcs()
+{
+  int cnt = 0;
+  int i;
+  for (i = 0; i < NPROC; i++)
+  {
+    if (proc[i].state != UNUSED)
+    {
+      cnt++;
+    }
+  }
+  return cnt;
+}
+
+int sysinfo(uint64 addr)
+{
+  // 获取当前进程
+  struct proc *p = myproc();
+  struct sysinfo si;
+  si.nproc = numOfProcs();
+  si.freemem = kNumOfFreenums();
+
+  // 将结构体内容复制到用户空间的地址
+  if (copyout(p->pagetable, addr, (char *)&si, sizeof(si)) < 0)
+  {
+    return -1;
+  }
+  return 0;
 }

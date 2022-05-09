@@ -112,3 +112,14 @@ uint64 sys_trace(void)
   myproc()->traceMask = traceMask;
   return 0;
 }
+
+// sys_sysinfo()实现
+uint64 sys_sysinfo(void) {
+  uint64 siAddr;
+  if(argaddr(0, &siAddr) < 0)
+  {
+    return -1;
+  }
+
+  return sysinfo(siAddr);
+}
