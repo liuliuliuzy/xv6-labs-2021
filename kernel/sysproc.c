@@ -92,9 +92,7 @@ int sys_pgaccess(void)
     if (argaddr(2, &ua) < 0)
         return -1;
 
-    // printf("%p - %d - %p\n", va, npages, ua);
-
-    // upper limit for npages is 512
+    // I set the upper limit for npages to 512
     if (npages > 512)
     {
         panic("too many pages to check");
@@ -102,53 +100,28 @@ int sys_pgaccess(void)
 
     // read page table
     struct proc *p = myproc();
-    pagetable_t pagetable;
+    // pagetable_t pagetable;
     pte_t *pte;
     char resbuf[64] = {0};
 
-    // check pagetable at first
-    // vmprint(p->pagetable);
-
-    int level, i;
+    int i;
     for (i = 0; i < npages; i++)
     {
-        // set temporary variable before every inner circulation
-        pagetable = p->pagetable;
-        for (level = 2; level > 0; level--)
+        pte = walk(p->pagetable, va, 0);
+        if (!((pte == 0) || ((*pte & PTE_V) == 0) || ((*pte & PTE_U) == 0)))
         {
-            // get pte
-            pte = &pagetable[PX(level, va)];
-            if (*pte & PTE_V)
-            {
-                pagetable = (pagetable_t)PTE2PA(*pte);
-            }
-            else
-            {
-                // search failed, so break
-                break;
-            }
-        }
-        // if found corresponding PTE
-        if (level == 0)
-        {
-            pte = &pagetable[PX(0, va)];
-            // printf("found PTE: %p\n", *pte);
-            // if not accessed
+            // if PTE_A is set
             if (*pte & PTE_A)
             {
+                // clear PTE_A
                 *pte &= (~PTE_A);
+                // store the result
                 resbuf[(i >> 3)] |= (1 << (i % 8));
             }
         }
         // renew va
         va += PGSIZE;
     }
-
-    // check result buf in kernel
-    // for (int j = 0; j < NBITS2BYTES(npages); j++)
-    // {
-    //     printf("%d: %d\n", j, resbuf[j]);
-    // }
 
     // copy the result from kernel to user
     if (copyout(p->pagetable, ua, resbuf, NBITS2BYTES(npages)) < 0)
