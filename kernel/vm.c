@@ -450,3 +450,46 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
         return -1;
     }
 }
+
+// helper function of vmprint()
+void vmprint_withlevel(pagetable_t pagetable, uint level)
+{
+    int cnt;
+    int i;
+    // there are 2^9 = 512 PTES in a page table;
+    for (i = 0; i < 512; i++)
+    {
+        pte_t pte = pagetable[i];
+        // if valid
+        if (pte & PTE_V)
+        {
+            // print level
+            for (cnt = 0; cnt < level; cnt++)
+            {
+                printf(" ..");
+            }
+            // child PTE
+            if ((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+            {
+                uint64 child = PTE2PA(pte);
+                printf("%d: pte %p pa %p\n", i, pte, child);
+                // Recursively read intermediate pagetable 
+                vmprint_withlevel((pagetable_t)child, level + 1);
+            }
+            // leaf
+            else
+            {
+                printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+            }
+        }
+    }
+}
+
+// xv6 lab3-2: print pagetable
+void vmprint(pagetable_t pagetable)
+{
+    // The first line displays the argument to vmprint.
+    printf("page table %p\n", pagetable);
+    // print the page table
+    vmprint_withlevel(pagetable, 1);
+}
