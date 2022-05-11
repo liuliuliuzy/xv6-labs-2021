@@ -11,7 +11,7 @@ kernelvec:
         // make room to save registers.
         addi sp, sp, -256
 
-        // save the registers.
+        // save(push) the registers.
         sd ra, 0(sp)
         sd sp, 8(sp)
         sd gp, 16(sp)
