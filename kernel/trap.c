@@ -81,7 +81,25 @@ void usertrap(void)
 
     // give up the CPU if this is a timer interrupt.
     if (which_dev == 2)
+    {
+        // 将p->alarminterval变量作为判断依据
+        if (p->alarmintervals > 0)
+        {
+            // 如果已经经过了p->alarmintervel个时钟周期
+            if (++p->pasdintervals == p->alarmintervals)
+            {
+                // p->pasdintervals = 0;
+                memmove(&(p->oldtf), p->trapframe, sizeof(struct trapframe));
+                // set sepc register to execute alarmhandler when return to user mode
+                p->trapframe->epc = p->alarmhandler;
+                // (*(void (*)(void))p->alarmhandler)();
+                // printf("handler addr is %p\n", p->alarmhandler);
+                // printf("ZYLEO SYSCALL SIGALARM\n");
+            }
+            // p->pasdintervals++;
+        }
         yield();
+    }
 
     // return to user mode from kernel
     usertrapret();
@@ -99,6 +117,7 @@ void usertrapret(void)
     // we're back in user space, where usertrap() is correct.
     intr_off();
 
+    // 将stvec寄存器写为uservec入口处
     // send syscalls, interrupts, and exceptions to trampoline.S
     w_stvec(TRAMPOLINE + (uservec - trampoline));
 
@@ -136,6 +155,7 @@ void usertrapret(void)
 void kerneltrap()
 {
     int which_dev = 0;
+    // save them before calling yield()
     uint64 sepc = r_sepc();
     uint64 sstatus = r_sstatus();
     uint64 scause = r_scause();
@@ -145,6 +165,7 @@ void kerneltrap()
     if (intr_get() != 0)
         panic("kerneltrap: interrupts enabled");
 
+    // 如果trap不是device interrupt
     if ((which_dev = devintr()) == 0)
     {
         printf("scause %p\n", scause);

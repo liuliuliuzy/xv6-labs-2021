@@ -99,6 +99,7 @@ userret:
         # put the saved user a0 in sscratch, so we
         # can swap it with our a0 (TRAPFRAME) in the last step.
         ld t0, 112(a0)
+        # 这时，sscratch中保存的是用户模式下的a0寄存器值
         csrw sscratch, t0
 
         # restore all but a0 from TRAPFRAME

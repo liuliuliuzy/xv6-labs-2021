@@ -116,4 +116,10 @@ struct proc
     struct file *ofile[NOFILE];  // Open files
     struct inode *cwd;           // Current directory
     char name[16];               // Process name (debugging)
+
+    // for sys_sigalarm & sys_sigreturn
+    int alarmintervals;     // the intervals that sigalarm() set
+    int pasdintervals;      // the number of tick that has passed since the invocation of sigalarm
+    uint64 alarmhandler;    // sigalarm handler function address
+    struct trapframe oldtf; // store old trapframe when enter timer interrupt
 };
