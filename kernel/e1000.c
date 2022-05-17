@@ -20,6 +20,7 @@ static struct mbuf *rx_mbufs[RX_RING_SIZE];
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+// struct spinlock e1000_rx_lock;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -28,33 +29,41 @@ void e1000_init(uint32 *xregs)
 {
     int i;
 
+    // 初始化锁
     initlock(&e1000_lock, "e1000");
+    // initlock(&e1000_rx_lock, "e1000 receive");
 
+    // 保存内存中的e1000寄存器起始地址到regs全局变量
     regs = xregs;
 
+    // 写特定的寄存器，重置设备
     // Reset the device
     regs[E1000_IMS] = 0; // disable interrupts
     regs[E1000_CTL] |= E1000_CTL_RST;
-    regs[E1000_IMS] = 0; // redisable interrupts
-    __sync_synchronize();
+    regs[E1000_IMS] = 0;  // redisable interrupts
+    __sync_synchronize(); // 插入内存屏障(memory barrier): https://en.wikipedia.org/wiki/Memory_barrier
 
+    // 初始化transmit环
     // [E1000 14.5] Transmit initialization
-    memset(tx_ring, 0, sizeof(tx_ring));
+    memset(tx_ring, 0, sizeof(tx_ring)); // sizeof(数组)会返回数组中所有元素的大小总和
     for (i = 0; i < TX_RING_SIZE; i++)
     {
         tx_ring[i].status = E1000_TXD_STAT_DD;
         tx_mbufs[i] = 0;
     }
+    // 同样，将相关值写入控制寄存器
     regs[E1000_TDBAL] = (uint64)tx_ring;
     if (sizeof(tx_ring) % 128 != 0)
         panic("e1000");
     regs[E1000_TDLEN] = sizeof(tx_ring);
     regs[E1000_TDH] = regs[E1000_TDT] = 0;
 
+    // 初始化receive环，操作步骤同上
     // [E1000 14.4] Receive initialization
     memset(rx_ring, 0, sizeof(rx_ring));
     for (i = 0; i < RX_RING_SIZE; i++)
     {
+        // 在内存中创建接收缓冲区
         rx_mbufs[i] = mbufalloc(0);
         if (!rx_mbufs[i])
             panic("e1000");
@@ -102,7 +111,38 @@ int e1000_transmit(struct mbuf *m)
     // the TX descriptor ring so that the e1000 sends it. Stash
     // a pointer so that it can be freed after sending.
     //
+    // printf("e1000_transmit(): called\n");
 
+    // 首先获取锁
+    acquire(&e1000_lock);
+
+    // 获取tail索引，这个索引标识e1000接下来要从哪个descriptor中读取数据并进行发送
+    int idx = regs[E1000_TDT];
+    struct tx_desc *desc = &tx_ring[idx];
+
+    // 如果还没有完成上一个txbuf的传输
+    if ((desc->status & E1000_TXD_STAT_DD) == 0)
+    {
+        release(&e1000_lock);
+        printf("buffer overflow\n");
+        return -1;
+    }
+
+    // 到这里说明完成了上一个buf内容的传输
+    // 如果上一个buf存在，则free之
+    if (tx_mbufs[idx])
+        mbuffree(tx_mbufs[idx]);
+
+    // 更新tx_desc描述符的值，将addr指向新的要发送的内容
+    desc->addr = (uint64)m->head;
+    desc->length = m->len;
+    desc->cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+    tx_mbufs[idx] = m;
+
+    // 下标加1，并进行取模运算
+    regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+    __sync_synchronize(); // 插入内存屏障(memory barrier): https://en.wikipedia.org/wiki/Memory_barrier
+    release(&e1000_lock);
     return 0;
 }
 
@@ -115,6 +155,36 @@ e1000_recv(void)
     // Check for packets that have arrived from the e1000
     // Create and deliver an mbuf for each packet (using net_rx()).
     //
+
+    // // 从E1000_RDT寄存器中获取等待被读取的缓冲区的id
+    int idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    struct rx_desc *desc = &rx_ring[idx];
+
+    // 一次执行，接收所有数据
+    // 只要缓冲区准备好被接收，就循环下去
+    while (desc->status & E1000_RXD_STAT_DD)
+    {
+        // 更新缓冲区长度信息
+        rx_mbufs[idx]->len = desc->length;
+        // 将缓冲区中的内容送给net_rx()
+        net_rx(rx_mbufs[idx]);
+
+        // 更新E1000_RDT寄存器的值
+        regs[E1000_RDT] = idx;
+
+        // 创建一个新的接收缓冲区
+        rx_mbufs[idx] = mbufalloc(0);
+        if (!rx_mbufs[idx])
+            panic("e1000_recv");
+
+        // 更新descriptor的信息
+        desc->addr = (uint64)rx_mbufs[idx]->head;
+        desc->status = 0;
+
+        // 更新descriptor，接收下个缓冲区
+        idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+        desc = &rx_ring[idx];
+    }
 }
 
 void e1000_intr(void)
