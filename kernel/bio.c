@@ -73,6 +73,7 @@ bget(uint dev, uint blockno)
             // 增加引用计数然后返回
             b->refcnt++;
             release(&bcache.lock);
+            // 获取buf的sleep lock，这样其它尝试获取该buf的进程就会因为sleep lock的机制而sleep
             acquiresleep(&b->lock);
             return b;
         }
@@ -135,10 +136,12 @@ void brelse(struct buf *b)
     if (b->refcnt == 0)
     {
         // no one is waiting for it.
+        // 将其脱链
         b->next->prev = b->prev;
         b->prev->next = b->next;
         b->next = bcache.head.next;
         b->prev = &bcache.head;
+        // 然后插入到链表的头部
         bcache.head.next->prev = b;
         bcache.head.next = b;
     }
