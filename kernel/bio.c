@@ -67,8 +67,10 @@ bget(uint dev, uint blockno)
     // Is the block already cached?
     for (b = bcache.head.next; b != &bcache.head; b = b->next)
     {
+        // 如果刚好buf的dev与blockno值与目标值相等
         if (b->dev == dev && b->blockno == blockno)
         {
+            // 增加引用计数然后返回
             b->refcnt++;
             release(&bcache.lock);
             acquiresleep(&b->lock);
@@ -80,6 +82,7 @@ bget(uint dev, uint blockno)
     // Recycle the least recently used (LRU) unused buffer.
     for (b = bcache.head.prev; b != &bcache.head; b = b->prev)
     {
+        // 寻找一个不被任何进程引用的buf
         if (b->refcnt == 0)
         {
             // 修改buf结构体的元数据
