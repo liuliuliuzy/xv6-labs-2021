@@ -19,21 +19,30 @@ struct run
     struct run *next;
 };
 
-struct
+struct kmem_percpu
 {
     struct spinlock lock;
     struct run *freelist;
-} kmem;
+};
+
+// every CPU holds a freelist
+struct kmem_percpu allkmems[NCPU];
 
 void kinit()
 {
-    initlock(&kmem.lock, "kmem");
+    char buf[9];
+    for (int i = 0; i < NCPU; i++)
+    {
+        snprintf(buf, 8, "kmem-%d", i);
+        initlock(&allkmems[i].lock, buf);
+    }
     freerange(end, (void *)PHYSTOP);
 }
 
 void freerange(void *pa_start, void *pa_end)
 {
     char *p;
+
     p = (char *)PGROUNDUP((uint64)pa_start);
     for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
         kfree(p);
@@ -46,6 +55,7 @@ void freerange(void *pa_start, void *pa_end)
 void kfree(void *pa)
 {
     struct run *r;
+    int cid = cpuid();
 
     if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
         panic("kfree");
@@ -55,10 +65,26 @@ void kfree(void *pa)
 
     r = (struct run *)pa;
 
-    acquire(&kmem.lock);
-    r->next = kmem.freelist;
-    kmem.freelist = r;
-    release(&kmem.lock);
+    acquire(&allkmems[cid].lock);
+    r->next = allkmems[cid].freelist;
+    allkmems[cid].freelist = r;
+    release(&allkmems[cid].lock);
+}
+
+void *kalloc_in_other(int cid)
+{
+    struct run *r; // 定义变量但是不赋值，那么会被初始化为0
+
+    // 查询该CPU的freelist链表
+    acquire(&allkmems[cid].lock);
+    r = allkmems[cid].freelist;
+    if (r)
+        allkmems[cid].freelist = r->next;
+    release(&allkmems[cid].lock);
+
+    if (r)
+        memset((char *)r, 5, PGSIZE); // fill with junk
+    return (void *)r;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -67,15 +93,31 @@ void kfree(void *pa)
 void *
 kalloc(void)
 {
-    struct run *r;
+    struct run *r; // 定义变量但是不赋值，那么会被初始化为0
+    int cid = cpuid();
 
-    acquire(&kmem.lock);
-    r = kmem.freelist;
+    acquire(&allkmems[cid].lock);
+    r = allkmems[cid].freelist;
     if (r)
-        kmem.freelist = r->next;
-    release(&kmem.lock);
+        allkmems[cid].freelist = r->next;
+    release(&allkmems[cid].lock);
 
     if (r)
+    {
         memset((char *)r, 5, PGSIZE); // fill with junk
+    }
+    // 如果当前CPU的freelist为空，则尝试去搜索其它CPU的freelist
+    else
+    {
+        for (int i = 0; i < NCPU; i++)
+        {
+            if (i != cid)
+            {
+                r = (struct run *)kalloc_in_other(i);
+                if (r)
+                    break;
+            }
+        }
+    }
     return (void *)r;
 }
