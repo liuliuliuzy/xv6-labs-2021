@@ -68,6 +68,7 @@ void acquire(struct spinlock *lk)
         panic("acquire");
 
 #ifdef LAB_LOCK
+    // acquire的次数加1
     __sync_fetch_and_add(&(lk->n), 1);
 #endif
 
@@ -78,6 +79,7 @@ void acquire(struct spinlock *lk)
     while (__sync_lock_test_and_set(&lk->locked, 1) != 0)
     {
 #ifdef LAB_LOCK
+        // 锁的尝试获取次数加1
         __sync_fetch_and_add(&(lk->nts), 1);
 #else
         ;
