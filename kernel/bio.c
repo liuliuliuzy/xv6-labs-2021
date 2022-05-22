@@ -31,8 +31,23 @@ struct
     // Linked list of all buffers, through prev/next.
     // Sorted by how recently the buffer was used.
     // head.next is most recent, head.prev is least.
-    struct buf head;
+    // struct buf head;
 } bcache;
+
+struct bucket
+{
+    struct spinlock lock;
+    struct buf head; // 双向链表存储
+};
+
+#define NBUCKET 13
+struct bucket bkts[NBUCKET];
+
+// 哈希函数
+int hash(uint blockno)
+{
+    return blockno % NBUCKET;
+}
 
 void binit(void)
 {
@@ -40,17 +55,27 @@ void binit(void)
 
     initlock(&bcache.lock, "bcache");
 
-    // Create linked list of buffers
-    bcache.head.prev = &bcache.head;
-    bcache.head.next = &bcache.head;
+    for (int i = 0; i < NBUCKET; i++)
+    {
+        bkts[i].head.next = &bkts[i].head;
+        bkts[i].head.prev = &bkts[i].head;
+        initlock(&bkts[i].lock, "cache bucket");
+    }
+
+    int serial = 1;
+    // 将每个buf送入bucket中
     for (b = bcache.buf; b < bcache.buf + NBUF; b++)
     {
-        // 将b插入到双向链表的头部
-        b->next = bcache.head.next;
-        b->prev = &bcache.head;
+        int idx = hash(serial);
+
         initsleeplock(&b->lock, "buffer");
-        bcache.head.next->prev = b;
-        bcache.head.next = b;
+
+        b->next = bkts[idx].head.next;
+        b->prev = &bkts[idx].head;
+        bkts[idx].head.next->prev = b; // 先修改prev指针
+        bkts[idx].head.next = b;       // 再修改next指针
+
+        serial++;
     }
 }
 
@@ -62,41 +87,93 @@ bget(uint dev, uint blockno)
 {
     struct buf *b;
 
-    acquire(&bcache.lock);
+    int idx = hash(blockno);
 
-    // Is the block already cached?
-    for (b = bcache.head.next; b != &bcache.head; b = b->next)
+    acquire(&bkts[idx].lock);
+    // 从当前bucket中寻找信息完全匹配的buf
+    for (b = bkts[idx].head.next; b != &bkts[idx].head; b = b->next)
     {
-        // 如果刚好buf的dev与blockno值与目标值相等
         if (b->dev == dev && b->blockno == blockno)
         {
-            // 增加引用计数然后返回
             b->refcnt++;
-            release(&bcache.lock);
-            // 获取buf的sleep lock，这样其它尝试获取该buf的进程就会因为sleep lock的机制而sleep
+            release(&bkts[idx].lock);
+
             acquiresleep(&b->lock);
             return b;
         }
     }
 
-    // Not cached.
-    // Recycle the least recently used (LRU) unused buffer.
-    for (b = bcache.head.prev; b != &bcache.head; b = b->prev)
+    struct buf *replace = 0;
+    int minTime = 0x7fffffff;
+    // 从当前bucket中寻找空闲的、最近使用时间点离现在最久的buf
+    for (b = bkts[idx].head.next; b != &bkts[idx].head; b = b->next)
     {
-        // 寻找一个不被任何进程引用的buf
-        if (b->refcnt == 0)
+        // printf("b: %p; b->refcnt: %d; b->timestamp: %d; minTime: %d\n", b, b->refcnt, b->timestamp, minTime);
+        if (b->refcnt == 0 && (b->timestamp < minTime))
         {
-            // 修改buf结构体的元数据
-            b->dev = dev;
-            b->blockno = blockno;
-            b->valid = 0;
-            b->refcnt = 1;
-            release(&bcache.lock);
-            acquiresleep(&b->lock);
-            return b;
+            replace = b;
+            minTime = b->timestamp;
+            // printf("    b: %p; b->refcnt: %d; b->timestamp: %d\n", b, b->refcnt, b->timestamp);
         }
     }
-    panic("bget: no buffers");
+    // printf("after first round of searching, replace is %p\n", replace);
+
+    if (replace)
+    {
+        replace->dev = dev;
+        replace->blockno = blockno;
+        replace->refcnt = 1;
+        replace->valid = 0;
+        release(&bkts[idx].lock);
+
+        acquiresleep(&replace->lock);
+        return replace;
+    }
+
+    // 从bcache全局数组中寻找空闲的、最近使用时间点离现在最久的buf
+    acquire(&bcache.lock);
+    for (b = bcache.buf; b < bcache.buf + NBUF; b++)
+    {
+        if (b->refcnt == 0 && b->timestamp < minTime)
+        {
+            replace = b;
+            minTime = b->timestamp;
+        }
+    }
+
+    if (replace)
+    {
+        int oldIdx = hash(replace->blockno);
+        // 脱链然后插入当前链表
+
+        // 从原链表脱链
+        acquire(&bkts[oldIdx].lock);
+        replace->next->prev = replace->prev;
+        replace->prev->next = replace->next;
+        release(&bkts[oldIdx].lock);
+
+        // 插入到当前链表
+        replace->next = bkts[idx].head.next;
+        replace->prev = &bkts[idx].head;
+        bkts[idx].head.next->prev = replace;
+        bkts[idx].head.next = replace;
+
+        release(&bcache.lock);
+
+        replace->dev = dev;
+        replace->blockno = blockno;
+        replace->refcnt = 1;
+        replace->valid = 0;
+        release(&bkts[idx].lock);
+
+        acquiresleep(&replace->lock);
+        return replace;
+    }
+    else
+    {
+        release(&bcache.lock);
+        panic("bget: no buffers");
+    }
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -131,34 +208,27 @@ void brelse(struct buf *b)
 
     releasesleep(&b->lock);
 
-    acquire(&bcache.lock);
+    int idx = hash(b->blockno);
+
+    acquire(&bkts[idx].lock);
     b->refcnt--;
     if (b->refcnt == 0)
-    {
-        // no one is waiting for it.
-        // 将其脱链
-        b->next->prev = b->prev;
-        b->prev->next = b->next;
-        b->next = bcache.head.next;
-        b->prev = &bcache.head;
-        // 然后插入到链表的头部
-        bcache.head.next->prev = b;
-        bcache.head.next = b;
-    }
-
-    release(&bcache.lock);
+        b->timestamp = ticks;
+    release(&bkts[idx].lock);
 }
 
 void bpin(struct buf *b)
 {
-    acquire(&bcache.lock);
+    int idx = hash(b->blockno);
+    acquire(&bkts[idx].lock);
     b->refcnt++;
-    release(&bcache.lock);
+    release(&bkts[idx].lock);
 }
 
 void bunpin(struct buf *b)
 {
-    acquire(&bcache.lock);
+    int idx = hash(b->blockno);
+    acquire(&bkts[idx].lock);
     b->refcnt--;
-    release(&bcache.lock);
+    release(&bkts[idx].lock);
 }
