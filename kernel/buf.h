@@ -2,14 +2,13 @@ struct buf
 {
     int valid; // has data been read from disk?
     int disk;  // does disk "own" buf?
-    // 磁盘信息
-    uint dev;     // 哪一块？
-    uint blockno; // block号？
+    uint dev;
+    uint blockno;
     struct sleeplock lock;
+    struct spinlock guard;
     uint refcnt;
-    struct buf *prev; // LRU cache list
     struct buf *next;
+    uint last_used;
+    uint bucketno;
     uchar data[BSIZE];
-
-    int timestamp; // （只对空闲buf而言）记录最后一次使用的时间
 };
