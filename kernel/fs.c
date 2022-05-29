@@ -385,23 +385,25 @@ void iunlockput(struct inode *ip)
 
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
-// 将inode的block中的编号，转换为磁盘中的block号
+// 将inode的block中的编号（逻辑block号），转换为磁盘中的block号
 static uint
 bmap(struct inode *ip, uint bn)
 {
     uint addr, *a;
     struct buf *bp;
 
-    // 前12个是直接block，所以block号就存储在inode的addrs数组中
+    // 前11个是一级block
     if (bn < NDIRECT)
     {
         if ((addr = ip->addrs[bn]) == 0)
-            ip->addrs[bn] = addr = balloc(ip->dev);
+            ip->addrs[bn] = addr = balloc(ip->dev); // inode->addr[]中存储的是磁盘中的block号，也是查找的目标
         // 到这里，磁盘内容并没有被修改，所以不需要调用log_write()
         return addr;
     }
-    // 接下来查找二级的非直接block
+
+    // 尝试查找二级block
     bn -= NDIRECT;
+    // 如果逻辑block号处于二级block的范围内
     if (bn < NINDIRECT)
     {
         // Load indirect block, allocating if necessary.
@@ -411,10 +413,45 @@ bmap(struct inode *ip, uint bn)
         a = (uint *)bp->data;
         if ((addr = a[bn]) == 0)
         {
+            // 改变了那一块磁盘的内容，所以需要调用log_write()记录写操作
             a[bn] = addr = balloc(ip->dev);
             log_write(bp);
         }
         brelse(bp);
+        return addr;
+    }
+
+    bn -= NINDIRECT;
+    if (bn < NDOUBINDIR)
+    {
+        int idx = bn / NINDIRECT;
+        int off = bn % NINDIRECT;
+        struct buf *bp_level2, *bp_level3;
+
+        // 尝试分配第一级的block
+        if ((addr = ip->addrs[NDIRECT + 1]) == 0)
+            ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+
+        bp_level2 = bread(ip->dev, addr);
+        uint *data_level2 = (uint *)bp_level2->data;
+
+        // 如果第二级的block为空，也要分配，并调用log_write()记录下对磁盘的写操作
+        if ((addr = data_level2[idx]) == 0)
+        {
+            data_level2[idx] = addr = balloc(ip->dev);
+            log_write(bp_level2);
+        }
+        brelse(bp_level2);
+
+        // 查询第三级block
+        bp_level3 = bread(ip->dev, addr);
+        uint *data_level3 = (uint *)bp_level3->data;
+        if ((addr = data_level3[off]) == 0)
+        {
+            data_level3[off] = addr = balloc(ip->dev);
+            log_write(bp_level3);
+        }
+        brelse(bp_level3);
         return addr;
     }
 
@@ -425,10 +462,11 @@ bmap(struct inode *ip, uint bn)
 // Caller must hold ip->lock.
 void itrunc(struct inode *ip)
 {
-    int i, j;
+    int i, j, k;
     struct buf *bp;
     uint *a;
 
+    // 清除11个一级block
     for (i = 0; i < NDIRECT; i++)
     {
         if (ip->addrs[i])
@@ -438,6 +476,7 @@ void itrunc(struct inode *ip)
         }
     }
 
+    // 清除二级block
     if (ip->addrs[NDIRECT])
     {
         bp = bread(ip->dev, ip->addrs[NDIRECT]);
@@ -450,6 +489,35 @@ void itrunc(struct inode *ip)
         brelse(bp);
         bfree(ip->dev, ip->addrs[NDIRECT]);
         ip->addrs[NDIRECT] = 0;
+    }
+
+    // 清除三级block
+    if (ip->addrs[NDIRECT + 1])
+    {
+        struct buf *bp_leve2;
+        uint *a_leve2;
+
+        bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+        a = (uint *)bp->data;
+        for (j = 0; j < NINDIRECT; j++)
+        {
+            if (a[j]) // 如果磁盘块中记录的二级blockno不为空
+            {
+                // 继续深入
+                bp_leve2 = bread(ip->dev, a[j]);
+                a_leve2 = (uint *)bp_leve2->data;
+                for (k = 0; k < NINDIRECT; k++)
+                {
+                    if (a_leve2[k])
+                        bfree(ip->dev, a_leve2[k]);
+                }
+                brelse(bp_leve2);
+                bfree(ip->dev, a[j]);
+            }
+        }
+        brelse(bp);
+        bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+        ip->addrs[NDIRECT + 1] = 0;
     }
 
     ip->size = 0;
