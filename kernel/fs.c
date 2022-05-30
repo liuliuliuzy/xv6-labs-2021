@@ -321,7 +321,10 @@ void ilock(struct inode *ip)
         brelse(bp);
         ip->valid = 1;
         if (ip->type == 0)
+            // {
+            //     backtrace();
             panic("ilock: no type");
+        // }
     }
 }
 
@@ -646,7 +649,8 @@ dirlookup(struct inode *dp, char *name, uint *poff)
     return 0;
 }
 
-// 往目录文件中新写入一个项，这样的话，那调用场景应该是在某个路径下创建文件的时候
+// 往目录文件中新写入一个项，指向inum标识的inode
+// 这样的话，那调用场景应该是在某个路径下创建文件的时候
 // Write a new directory entry (name, inum) into the directory dp.
 int dirlink(struct inode *dp, char *name, uint inum)
 {
