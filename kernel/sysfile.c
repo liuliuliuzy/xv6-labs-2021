@@ -519,14 +519,157 @@ sys_pipe(void)
     return 0;
 }
 
+/**
+ * addr: 映射的虚拟空间的起始地址（当前版本固定为0）
+ * length: 映射长度
+ * prot: 进程对虚拟地址空间的读、写、执行权限，PROT_READ or PROT_WRITE or PROT_EXECUTE or PROT_NONE
+ * flags: 对虚拟地址空间的读写操作与文件之间的关系，MAP_SHARED or MAP_PRIVATE
+ * fd: 源文件的文件描述符
+ * offset: 文件偏移（当前版本固定为0）
+ * 返回值：vma的起始地址，页对齐
+ */
 uint64 sys_mmap(void)
 {
-    printf("sys_mmap() called\n");
-    return 0;
+    uint64 addr;
+    int length, prot, flags, fd, offset;
+
+    // 获取参数
+    if (argaddr(0, &addr) < 0 ||
+        argint(1, &length) < 0 ||
+        argint(2, &prot) < 0 ||
+        argint(3, &flags) < 0 ||
+        argint(4, &fd) < 0 ||
+        argint(5, &offset) < 0)
+        return -1;
+
+    // 可以假设用户输入的addr总是为0，由内核来分配映射的虚拟地址空间
+    if (addr != 0)
+        panic("sys_mmap: addr should be 0");
+
+    if (offset != 0)
+        panic("sys_mmap: offset should be 0");
+
+    // 获取当前进程的指针
+    struct proc *p = myproc();
+
+    // 由文件描述符，在进程的打开文件表中找到要映射的源文件结构体指针
+    struct file *f = p->ofile[fd];
+
+    // permission中包含可读，但是源文件本身不可读，那么返回错误
+    if (prot & PROT_READ && !(f->readable))
+        return -1;
+
+    // permission中包含可写，但是源文件本身不可写，且flags中不含有MAP_PRIVATE，那么返回错误
+    if (prot & PROT_WRITE && !(f->writable) && !(flags & MAP_PRIVATE))
+        return -1;
+
+    // 获取一个可用的vma项
+    struct vma *v = vma_alloc();
+
+    // 设置vma的各项值
+    v->permissions = prot;
+    v->length = length;
+    v->offset = offset;
+    v->flags = flags;
+    v->f = f;
+
+    // 对文件f增加引用计数
+    filedup(f);
+
+    // 如果进程vma链表不为空，那么将新的vma的起始地址设为更大的、最靠近上一个vma的页地址
+    if (p->vma)
+        v->start = PGROUNDUP(p->vma->end);
+    // 如果进程vma链表为空，那么新的vma直接使用预定义的起始地址VMA_START
+    else
+        v->start = VMA_START;
+
+    v->end = v->start + length;
+    v->next = p->vma;
+    p->vma = v;
+
+    addr = v->start;
+    // release(&v->lock);
+
+    // 将vma的起始地址返回
+    return addr;
 }
 
+/**
+ * addr: munmap的目标起始地址，需要页对齐
+ * length：munmap区域的长度，也是页对齐
+ */
 uint64 sys_munmap(void)
 {
-    printf("sys_munmap() called\n");
+    uint64 addr;
+    int length;
+    if (argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+        return -1;
+
+    // printf("addr is %p\nlength is %d\n", addr, length);
+
+    // 查询
+    struct proc *p = myproc();
+    struct vma *v = p->vma, *prev = 0;
+
+    while (v)
+    {
+        // printf("v: %p\nstart: %p\nend: %p\n", v, v->start, v->end);
+        if (addr >= v->start && addr < v->end)
+            break;
+        prev = v; // 记录前驱节点，以备在从链表中删除节点时使用
+        v = v->next;
+    }
+
+    printf("v: %p\n", v);
+
+    if (v == 0)
+        return -1;
+
+    /**
+     * TODO: 删除之前要先判断是否要将vma中的内容写回到文件中？
+     * 根据v->flags内容来进行判断
+     */
+
+    int if_close_file = 0;
+
+    if (addr == v->start && length == v->length) // 删除整个vma项
+    {
+        struct vma *tmp = v->next;
+        if (prev)
+            prev->next = tmp;
+        else
+            p->vma = tmp;
+        if_close_file = 1;
+
+        // vma标记为空闲状态
+        // acquire(&v->lock);
+        v->length = 0;
+        // release(&v->lock);
+    }
+    else if (addr == v->start && length < v->length) // 删除vma的前半部分
+    {
+        v->start = addr + length;
+        v->length -= length;
+    }
+    else if (addr > v->start && addr + length == v->end) // 删除vma的后半部分
+    {
+        v->end = addr;
+        v->length -= length;
+    }
+    else
+    {
+        panic("sys_munmap(): don't support unmapping middle part of vma");
+    }
+
+    if (v->flags & MAP_SHARED && v->permissions & PROT_WRITE)
+        // 文件内容写回
+        write_back(v, addr, length);
+
+    if (if_close_file)
+        fileclose(v->f);
+
+    // 删除页表中的映射项
+    uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+
     return 0;
 }
